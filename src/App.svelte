@@ -66,72 +66,130 @@ function onchange(e: Event & { currentTarget: HTMLInputElement }) {
 function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
   let diff = 0;
   const length = data1.length;
+  const pixelCount = length / 4;
   
+  // 使用更鲁棒的相似度计算方法
+  // 计算每个像素的差异平方和，然后开方得到欧氏距离
+  let sumOfSquares = 0;
   for (let i = 0; i < length; i += 4) {
-      // 比较RGB通道，忽略Alpha通道
-    const rDiff = Math.abs(data1[i] - data2[i]);
-    const gDiff = Math.abs(data1[i+1] - data2[i+1]);
-    const bDiff = Math.abs(data1[i+2] - data2[i+2]);
+    const rDiff = data1[i] - data2[i];
+    const gDiff = data1[i+1] - data2[i+1];
+    const bDiff = data1[i+2] - data2[i+2];
     
-    diff += (rDiff + gDiff + bDiff) / 3;
+    sumOfSquares += rDiff * rDiff + gDiff * gDiff + bDiff * bDiff;
   }
   
-  // 计算平均差异并转换为相似度
-  const avgDiff = diff / (length / 4);
-  const similarity = 1 - (avgDiff / 255);
+  const euclideanDistance = Math.sqrt(sumOfSquares);
+  // 最大可能的欧氏距离是 sqrt(3 * 255^2) = 255 * sqrt(3) ≈ 441.67
+  const maxDistance = 255 * Math.sqrt(3);
+  // 转换为相似度（0-1之间）
+  const similarity = 1 - (euclideanDistance / maxDistance);
   
-  return Math.max(0, similarity);
+  return Math.max(0, Math.min(1, similarity));
 }
 
 function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
+  // 创建临时画布并缩小尺寸以提高性能和鲁棒性
   const tempCanvas1 = document.createElement('canvas');
   const tempCtx1 = tempCanvas1.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas1.width = frameCanvas.width;
-  tempCanvas1.height = frameCanvas.height;
-  tempCtx1.drawImage(img1, 0, 0);
-  
   const tempCanvas2 = document.createElement('canvas');
   const tempCtx2 = tempCanvas2.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas2.width = frameCanvas.width;
-  tempCanvas2.height = frameCanvas.height;
-  tempCtx2.drawImage(img2, 0, 0);
+  
+  // 缩小到原尺寸的1/4，减少计算量并提高鲁棒性
+  const scaleFactor = 0.25;
+  const width = Math.floor(frameCanvas.width * scaleFactor);
+  const height = Math.floor(frameCanvas.height * scaleFactor);
+  
+  tempCanvas1.width = width;
+  tempCanvas1.height = height;
+  tempCtx1.drawImage(img1, 0, 0, width, height);
+  
+  tempCanvas2.width = width;
+  tempCanvas2.height = height;
+  tempCtx2.drawImage(img2, 0, 0, width, height);
   
   // 获取图像数据
-  const imageData1 = tempCtx1.getImageData(0, 0, tempCanvas1.width, tempCanvas1.height);
-  const imageData2 = tempCtx2.getImageData(0, 0, tempCanvas2.width, tempCanvas2.height);
+  const imageData1 = tempCtx1.getImageData(0, 0, width, height);
+  const imageData2 = tempCtx2.getImageData(0, 0, width, height);
   
   // 计算相似度
   return calculateSimilarity(imageData1.data, imageData2.data)
 }
 
 function findLoop(start: number) {
-  let lastSim = 1
-  loopStart = start
-  frames[start].select = true
-  const mark = frames[start].img
-  let selectFlag = true
-  if (start > 0) {
-    for (let i = 0; i < start; i++) {
-      frames[i].select = false
-    }
-  }
-  for (let i = start + 1, l = frames.length; i < l; i++) {
-    if (selectFlag) {
-      const curSim = compare(frames[i].img, mark)
-      if (curSim > lastSim && curSim > 0.98) {
-        selectFlag = false
-        loopEnd = i - 1
-      }
-      lastSim = curSim
-    }
-    frames[i].select = selectFlag
+  // 重置所有帧的选择状态
+  frames.forEach(frame => frame.select = false);
+  
+  loopStart = start;
+  frames[start].select = true;
+  const mark = frames[start].img;
+  const minLoopLength = 10; // 最小循环长度（帧）
+  const maxLoopLength = Math.min(100, Math.floor(frames.length / 2)); // 最大循环长度（帧）
+  const similarityThreshold = 0.95; // 相似度阈值
+  
+  let bestLoopEnd = -1;
+  let highestSimilarity = 0;
+  
+  // 从start + minLoopLength到start + maxLoopLength之间寻找最佳匹配
+  for (let i = start + minLoopLength; i <= start + maxLoopLength && i < frames.length; i++) {
+    const curSim = compare(frames[i].img, mark);
     
+    // 如果找到相似度足够高的帧，记录下来
+    if (curSim >= similarityThreshold && curSim > highestSimilarity) {
+      highestSimilarity = curSim;
+      bestLoopEnd = i - 1; // 循环结束帧是匹配帧的前一帧
+    }
   }
-  // 证明没找到
-  if (selectFlag === true && frames.length - 1 > start) {
-    loopEnd = frames.length - 2
-    // findLoop(++start)
-    alert('没找到')
+  
+  // 如果找到合适的循环
+  if (bestLoopEnd !== -1) {
+    loopEnd = bestLoopEnd;
+    // 标记循环内的所有帧
+    for (let i = start; i <= loopEnd; i++) {
+      frames[i].select = true;
+    }
+    console.log(`找到循环: 从帧 ${start} 到帧 ${loopEnd}，相似度: ${highestSimilarity.toFixed(4)}`);
+  } else {
+    // 如果没有找到，尝试寻找其他可能的循环
+    console.log('未找到完美循环，尝试寻找近似循环...');
+    
+    // 寻找连续相似帧的序列
+    let maxSimilarFrames = 0;
+    let currentSimilarFrames = 0;
+    let tempLoopStart = start;
+    
+    for (let i = start + 1; i < frames.length; i++) {
+      const curSim = compare(frames[i].img, frames[i - 1].img);
+      
+      if (curSim >= 0.9) {
+        currentSimilarFrames++;
+        if (currentSimilarFrames > maxSimilarFrames) {
+          maxSimilarFrames = currentSimilarFrames;
+          bestLoopEnd = i;
+          tempLoopStart = i - currentSimilarFrames;
+        }
+      } else {
+        currentSimilarFrames = 0;
+      }
+    }
+    
+    if (maxSimilarFrames >= minLoopLength) {
+      loopStart = tempLoopStart;
+      loopEnd = bestLoopEnd;
+      // 标记循环内的所有帧
+      for (let i = loopStart; i <= loopEnd; i++) {
+        frames[i].select = true;
+      }
+      console.log(`找到近似循环: 从帧 ${loopStart} 到帧 ${loopEnd}，长度: ${maxSimilarFrames + 1} 帧`);
+    } else {
+      // 如果还是没有找到，使用默认循环
+      loopEnd = Math.min(start + 50, frames.length - 1);
+      // 标记循环内的所有帧
+      for (let i = start; i <= loopEnd; i++) {
+        frames[i].select = true;
+      }
+      console.log(`未找到合适循环，使用默认循环: 从帧 ${start} 到帧 ${loopEnd}`);
+    }
   }
 }
 
@@ -184,20 +242,34 @@ async function extractAllFrames() {
 
 function begainLoop() {
   if (inRemoveBg) return
+  if (loopStart === loopEnd) {
+    alert('没有找到有效的循环，请先选择一个起始帧');
+    return;
+  }
 
   inLoop = true
   loopFrame = loopStart
+  const loopLength = loopEnd - loopStart + 1;
+  const targetFPS = 30; // 目标帧率
+  const frameDuration = 1000 / targetFPS; // 每帧持续时间（毫秒）
+  let lastFrameTime = performance.now();
 
-  function run() {
-    requestAnimationFrame(() => {
-      loopFrame++
-      console.log(loopFrame, loopEnd)
-      if (loopFrame > loopEnd) loopFrame = loopStart
-      if (inLoop) run()
-    })
+  function run(currentTime: number) {
+    if (!inLoop) return;
+    
+    const elapsedTime = currentTime - lastFrameTime;
+    
+    // 确保按照目标帧率播放
+    if (elapsedTime >= frameDuration) {
+      loopFrame++;
+      if (loopFrame > loopEnd) loopFrame = loopStart;
+      lastFrameTime = currentTime - (elapsedTime % frameDuration); // 保持时间精度
+    }
+    
+    requestAnimationFrame(run);
   }
 
-  run()
+  requestAnimationFrame(run);
 }
 
 function blobToBase64(blob: Blob) {
