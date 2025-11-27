@@ -112,45 +112,62 @@ function findLoop(start: number) {
   loopStart = start;
   frames[start].select = true;
   const mark = frames[start].img;
-  const minLoopLength = 10; // 最小循环长度
-  const maxLoopLength = Math.min(300, Math.floor(frames.length / 2)); // 最大循环长度
-  const similarityThreshold = 0.95; // 相似度阈值
+  const minLoopLength = 20; // 增加最小循环长度，避免过短的循环
+  const similarityThreshold = 0.92; // 降低相似度阈值，允许更多变化
   
   let bestMatchIndex = -1;
   let highestSimilarity = 0;
+  let potentialMatches: Array<{index: number, similarity: number}> = [];
   
-  // 在合理范围内寻找最相似的帧
-  for (let i = start + minLoopLength; i < start + maxLoopLength && i < frames.length; i++) {
+  // 在所有后续帧中寻找潜在匹配
+  for (let i = start + minLoopLength; i < frames.length; i++) {
     const curSim = compare(frames[i].img, mark);
     
-    if (curSim > similarityThreshold && curSim > highestSimilarity) {
-      highestSimilarity = curSim;
-      bestMatchIndex = i;
+    // 收集所有超过阈值的潜在匹配
+    if (curSim > similarityThreshold) {
+      potentialMatches.push({index: i, similarity: curSim});
       
-      // 如果相似度非常高，提前结束搜索
-      if (curSim > 0.98) {
-        break;
+      if (curSim > highestSimilarity) {
+        highestSimilarity = curSim;
+        bestMatchIndex = i;
       }
     }
   }
   
+  // 如果找到多个潜在匹配，选择最合适的一个
+  if (potentialMatches.length > 1) {
+    // 优先选择相似度高且循环长度适中的匹配
+    potentialMatches.sort((a, b) => {
+      // 相似度权重70%，循环长度权重30%
+      const scoreA = a.similarity * 0.7 + (1 - a.index / frames.length) * 0.3;
+      const scoreB = b.similarity * 0.7 + (1 - b.index / frames.length) * 0.3;
+      return scoreB - scoreA;
+    });
+    
+    bestMatchIndex = potentialMatches[0].index;
+  }
+  
   if (bestMatchIndex !== -1) {
     loopEnd = bestMatchIndex - 1;
-    // 标记循环范围内的帧
-    for (let i = start; i <= loopEnd; i++) {
-      frames[i].select = true;
+    
+    // 验证循环的连续性
+    const loopLength = loopEnd - loopStart + 1;
+    if (loopLength < minLoopLength) {
+      loopEnd = frames.length - 1;
+      console.warn('循环长度过短，使用默认范围');
     }
   } else {
     // 如果没找到，默认使用从start到末尾的范围
     loopEnd = frames.length - 1;
-    // 标记循环范围内的帧
-    for (let i = start; i <= loopEnd; i++) {
-      frames[i].select = true;
-    }
     console.warn('未找到明显的循环帧，使用默认范围');
   }
   
-  console.log(`找到循环范围: ${loopStart} - ${loopEnd}`);
+  // 标记循环范围内的帧
+  for (let i = start; i <= loopEnd; i++) {
+    frames[i].select = true;
+  }
+  
+  console.log(`找到循环范围: ${loopStart} - ${loopEnd} (长度: ${loopEnd - loopStart + 1})`);
 }
 
 function waitForSeek(video: HTMLVideoElement) {
@@ -184,10 +201,10 @@ async function extractAllFrames() {
     if (lastFrameImg !== nowFrameImg) {
       const src = frameCanvas.toDataURL('image/png')
       const img = new Image();
-      img.src = src;
-      frames.push({ src, img });
-      lastFrameImg = nowFrameImg;
-      currentFrameIndex++;
+        img.src = src;
+        frames = [...frames, { src, img }]
+        lastFrameImg = nowFrameImg
+        currentFrameIndex++;
     }
     
     // 如果还有下一帧，设置下一帧的时间
