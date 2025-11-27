@@ -64,26 +64,26 @@ function onchange(e: Event & { currentTarget: HTMLInputElement }) {
 }
 
 function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
-  let diff = 0;
   const length = data1.length;
   const pixelCount = length / 4;
   
-  // 使用更鲁棒的相似度计算方法
-  // 计算每个像素的差异平方和，然后开方得到欧氏距离
-  let sumOfSquares = 0;
+  // 计算每个像素的平均差异
+  let totalDiff = 0;
   for (let i = 0; i < length; i += 4) {
-    const rDiff = data1[i] - data2[i];
-    const gDiff = data1[i+1] - data2[i+1];
-    const bDiff = data1[i+2] - data2[i+2];
+    const rDiff = Math.abs(data1[i] - data2[i]);
+    const gDiff = Math.abs(data1[i+1] - data2[i+1]);
+    const bDiff = Math.abs(data1[i+2] - data2[i+2]);
     
-    sumOfSquares += rDiff * rDiff + gDiff * gDiff + bDiff * bDiff;
+    // 计算每个像素的平均差异（0-255之间）
+    const pixelDiff = (rDiff + gDiff + bDiff) / 3;
+    totalDiff += pixelDiff;
   }
   
-  const euclideanDistance = Math.sqrt(sumOfSquares);
-  // 最大可能的欧氏距离是 sqrt(3 * 255^2) = 255 * sqrt(3) ≈ 441.67
-  const maxDistance = 255 * Math.sqrt(3);
-  // 转换为相似度（0-1之间）
-  const similarity = 1 - (euclideanDistance / maxDistance);
+  // 计算所有像素的平均差异
+  const avgDiff = totalDiff / pixelCount;
+  
+  // 转换为相似度（0-1之间），差异越小相似度越高
+  const similarity = 1 - (avgDiff / 255);
   
   return Math.max(0, Math.min(1, similarity));
 }
@@ -117,29 +117,28 @@ function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
 }
 
 function findLoop(start: number) {
-  // 重置所有帧的选择状态
-  frames.forEach(frame => frame.select = false);
-  
-  loopStart = start;
-  frames[start].select = true;
-  const mark = frames[start].img;
-  const minLoopLength = 10; // 最小循环长度（帧）
-  const maxLoopLength = Math.min(100, Math.floor(frames.length / 2)); // 最大循环长度（帧）
-  const similarityThreshold = 0.95; // 相似度阈值
-  
-  let bestLoopEnd = -1;
-  let highestSimilarity = 0;
-  
-  // 从start + minLoopLength到start + maxLoopLength之间寻找最佳匹配
-  for (let i = start + minLoopLength; i <= start + maxLoopLength && i < frames.length; i++) {
-    const curSim = compare(frames[i].img, mark);
+    // 重置所有帧的选择状态
+    frames.forEach(frame => frame.select = false);
     
-    // 如果找到相似度足够高的帧，记录下来
-    if (curSim >= similarityThreshold && curSim > highestSimilarity) {
-      highestSimilarity = curSim;
-      bestLoopEnd = i - 1; // 循环结束帧是匹配帧的前一帧
+    loopStart = start;
+    frames[start].select = true;
+    const mark = frames[start].img;
+    const minLoopLength = 10; // 最小循环长度（帧）
+    const similarityThreshold = 0.95; // 相似度阈值
+    
+    let bestLoopEnd = -1;
+    let highestSimilarity = 0;
+    
+    // 从start + minLoopLength到frames.length - 1之间寻找最佳匹配
+    for (let i = start + minLoopLength; i < frames.length; i++) {
+      const curSim = compare(frames[i].img, mark);
+      
+      // 如果找到相似度足够高的帧，记录下来
+      if (curSim >= similarityThreshold && curSim > highestSimilarity) {
+        highestSimilarity = curSim;
+        bestLoopEnd = i - 1; // 循环结束帧是匹配帧的前一帧
+      }
     }
-  }
   
   // 如果找到合适的循环
   if (bestLoopEnd !== -1) {
@@ -160,6 +159,8 @@ function findLoop(start: number) {
     
     for (let i = start + 1; i < frames.length; i++) {
       const curSim = compare(frames[i].img, frames[i - 1].img);
+
+      console.log(curSim)
       
       if (curSim >= 0.9) {
         currentSimilarFrames++;
