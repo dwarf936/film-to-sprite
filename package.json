@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
+    "crypto-browserify": "^3.12.1",
     "fluent-ffmpeg": "^2.1.3"
   }
 }
