@@ -529,6 +529,17 @@ async function removeFrameBg() {
   cursor: pointer;
 }
 
+.do-frame-container button.selected {
+  border: 2px solid #4a00e0;
+  border-radius: 5px;
+}
+
+.do-frame-container button img {
+  max-width: 100%;
+  max-height: 100px;
+  display: block;
+}
+
 
 
 .frame-canvas {
