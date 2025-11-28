@@ -24,6 +24,12 @@ let frames: Frame[] = []
 let isProcessing = false
 let ctx: CanvasRenderingContext2D
 
+// New parameters for loop detection
+let similarityThreshold: number = 0.95;
+let searchRange: number = 50;
+let similarityThresholdSlider: HTMLInputElement;
+let searchRangeSlider: HTMLInputElement;
+
 function formatTime(seconds: number) {
   if (!seconds) return '00:00'
   const mins = Math.floor(seconds / 60);
@@ -132,6 +138,55 @@ function findLoop(start: number) {
     loopEnd = frames.length - 2
     // findLoop(++start)
     alert('没找到')
+  }
+}
+
+// New function to find optimal loop based on parameters
+function findOptimalLoop() {
+  if (frames.length === 0) return;
+  
+  let bestSimilarity = -1;
+  let bestStart = 0;
+  let bestEnd = 0;
+  
+  // Calculate search range (last X% of frames)
+  const searchStart = Math.floor(frames.length * (100 - searchRange) / 100);
+  const searchEnd = frames.length - 1;
+  
+  // Minimum loop length (at least 5 frames)
+  const minLoopLength = 5;
+  
+  // Iterate over all possible start frames
+  const startFrames = searchRange === 100 ? frames.length : searchStart;
+  for (let start = 0; start < startFrames; start++) {
+    // Compare with frames in the search range
+    for (let end = searchStart; end <= searchEnd; end++) {
+      if (end <= start + minLoopLength - 1) continue; // Skip frames that would result in too short loop
+      
+      const sim = compare(frames[start].img, frames[end].img);
+
+      console.log('sim ===', sim, start, end)
+      
+      // Update best match if current similarity is higher than threshold and better than previous
+      if (sim > similarityThreshold && sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestStart = start;
+        bestEnd = end - 1; // Loop end is one before the matching frame
+      }
+    }
+  }
+  
+  // If found a valid loop
+  if (bestSimilarity > similarityThreshold) {
+    loopStart = bestStart;
+    loopEnd = bestEnd;
+    
+    // Update UI selection
+    frames.forEach((frame, index) => {
+      frame.select = index >= bestStart && index <= bestEnd;
+    });
+  } else {
+    alert('未找到符合条件的循环帧，请调整参数后重试');
   }
 }
 
@@ -287,8 +342,9 @@ async function removeFrameBg() {
     <div class="do-frame-container">
       {#if frames.length}
         {#each frames as frame, i }
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <img src={frame.src} alt={`${i}`} class={ frame.select ? 'selected' : '' } on:click={() => findLoop(i)}/>
+          <button class={ frame.select ? 'selected frame-button' : 'frame-button' } on:click={() => findLoop(i)} aria-label={`Frame ${i}`}>
+            <img src={frame.src} alt={`Frame ${i}`} />
+          </button>
         {/each}
       {/if}
     </div>
@@ -301,6 +357,22 @@ async function removeFrameBg() {
         <img src={frames[loopFrame].src} alt={`${loopFrame}`}/>
       {/if}
     </div>
+    
+    <div class="loop-controls">
+      <div class="control-group">
+        <label for="similarityThreshold">相似度阈值:</label>
+        <input type="range" bind:this={similarityThresholdSlider} bind:value={similarityThreshold} min="0.8" max="1.0" step="0.01">
+        <span id="similarityValue">{similarityThreshold.toFixed(2)}</span>
+      </div>
+      
+      <div class="control-group">
+        <label for="searchRange">搜索范围 (%):</label>
+        <input type="range" bind:this={searchRangeSlider} bind:value={searchRange} min="10" max="100" step="5">
+        <span id="searchRangeValue">{searchRange}%</span>
+      </div>
+    </div>
+    
+    <button on:click={findOptimalLoop} class="primary">找到最佳循环</button>
     <button on:click={begainLoop}>开始播放</button>
     <button on:click={removeFrameBg}>清除背景</button>
   </div>
@@ -378,17 +450,33 @@ async function removeFrameBg() {
 
 .do-frame-container {
   width: 100%;
-  display: block;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px;
   background: #000;
   border-radius: 10px;
   margin-bottom: 20px;
 }
 
-.do-frame-container img {
-  max-height: 100px;
+.do-frame-container .frame-button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 5px;
+  overflow: hidden;
 }
-.do-frame-container img.selected {
-  opacity: 0.8;
+.do-frame-container .frame-button img {
+  max-height: 80px;
+  display: block;
+}
+.do-frame-container .frame-button.selected {
+  outline: 3px solid #4a00e0;
+  outline-offset: 2px;
+}
+.do-frame-container .frame-button.selected img {
+  opacity: 1;
 }
 
 .frame-canvas {
@@ -470,5 +558,32 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: #4a00e0;
   cursor: pointer;
+}
+
+.loop-controls {
+  margin-bottom: 20px;
+}
+
+.control-group {
+  margin-bottom: 15px;
+}
+
+.control-group label {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.control-group input[type="range"] {
+  width: 80%;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.control-group span {
+  display: inline-block;
+  width: 15%;
+  text-align: right;
+  vertical-align: middle;
+  margin-left: 5%;
 }
 </style>
