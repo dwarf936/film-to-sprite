@@ -373,9 +373,7 @@ async function removeFrameBg() {
     <div class="do-frame-container">
       {#if frames.length}
         {#each frames as frame, i }
-          <button class={ frame.select ? 'selected' : '' } on:click={() => findLoop(i)} aria-label={`选择帧 ${i}`} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') findLoop(i); }} tabindex="0">
-            <img src={frame.src} alt={`${i}`} />
-          </button>
+          <img src={frame.src} alt={`${i}`} on:click={() => findLoop(i)}/>
         {/each}
       {/if}
     </div>
@@ -521,23 +519,31 @@ async function removeFrameBg() {
   margin-bottom: 20px;
 }
 
+.do-frame-container img {
+  max-height: 100px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  padding: 2px;
+  border: 2px solid transparent;
+}
+
+.do-frame-container img:hover {
+  border: 2px solid rgba(74, 0, 224, 0.5);
+  border-radius: 5px;
+}
+
+.do-frame-container img.selected {
+  border: 2px solid #4a00e0;
+  border-radius: 5px;
+  transform: scale(1.05);
+}
+
 .do-frame-container button {
   max-height: 100px;
   border: none;
   background: transparent;
   padding: 0;
   cursor: pointer;
-}
-
-.do-frame-container button.selected {
-  border: 2px solid #4a00e0;
-  border-radius: 5px;
-}
-
-.do-frame-container button img {
-  max-width: 100%;
-  max-height: 100px;
-  display: block;
 }
 
 
