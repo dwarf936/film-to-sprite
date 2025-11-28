@@ -84,6 +84,18 @@ function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
 }
 
 function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
+  // 检查frameCanvas是否已初始化
+  if (!frameCanvas) {
+    console.error('frameCanvas尚未初始化');
+    return 0;
+  }
+  
+  // 检查图像是否已加载完成
+  if (!img1.complete || !img2.complete) {
+    console.error('图像尚未加载完成');
+    return 0;
+  }
+  
   const tempCanvas1 = document.createElement('canvas');
   const tempCtx1 = tempCanvas1.getContext('2d') as CanvasRenderingContext2D;
   tempCanvas1.width = frameCanvas.width;
@@ -104,21 +116,62 @@ function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
   return calculateSimilarity(imageData1.data, imageData2.data)
 }
 
+// 添加参数配置
+let loopSensitivity = 0.95; // 循环检测灵敏度，值越高要求越严格
+let processingPrecision = 'medium'; // 处理精度: low, medium, high
+let batchSize = 30; // 帧提取批量大小
+let parallelLimit = 4; // 背景去除并行数
+let canvasQuality = 1.0; // 画布质量，0.1-1.0
+
+// 根据处理精度调整参数
+function updatePrecisionSettings() {
+  switch(processingPrecision) {
+    case 'low':
+      batchSize = 60; // 更大的批量
+      parallelLimit = 8; // 更多的并行
+      canvasQuality = 0.5; // 降低画布质量
+      break;
+    case 'medium':
+      batchSize = 30; // 中等批量
+      parallelLimit = 4; // 中等并行
+      canvasQuality = 1.0; // 高质量
+      break;
+    case 'high':
+      batchSize = 15; // 更小的批量
+      parallelLimit = 2; // 更少的并行
+      canvasQuality = 1.0; // 高质量
+      break;
+  }
+}
+
 function findLoop(start: number) {
   let lastSim = 1
   loopStart = start
   frames[start].select = true
   const mark = frames[start].img
   let selectFlag = true
+  let maxSimilarity = 0;
+  let bestLoopEnd = start;
+  
   if (start > 0) {
     for (let i = 0; i < start; i++) {
       frames[i].select = false
     }
   }
+  
+  // 使用更精确的循环检测算法
   for (let i = start + 1, l = frames.length; i < l; i++) {
     if (selectFlag) {
       const curSim = compare(frames[i].img, mark)
-      if (curSim > lastSim && curSim > 0.98) {
+      
+      // 记录最高相似度
+      if (curSim > maxSimilarity) {
+        maxSimilarity = curSim;
+        bestLoopEnd = i - 1;
+      }
+      
+      // 当相似度超过阈值且开始下降时，认为找到循环
+      if (curSim > loopSensitivity && curSim < lastSim) {
         selectFlag = false
         loopEnd = i - 1
       }
@@ -127,11 +180,15 @@ function findLoop(start: number) {
     frames[i].select = selectFlag
     
   }
-  // 证明没找到
+  
+  // 如果没有找到明确的循环结束点，使用相似度最高的点
   if (selectFlag === true && frames.length - 1 > start) {
-    loopEnd = frames.length - 2
-    // findLoop(++start)
-    alert('没找到')
+    loopEnd = bestLoopEnd > start ? bestLoopEnd : frames.length - 2
+    
+    // 如果相似度仍然很低，提示用户
+    if (maxSimilarity < 0.8) {
+      alert('未找到明显的循环模式，已自动选择最佳匹配点')
+    }
   }
 }
 
@@ -147,54 +204,72 @@ function waitForSeek(video: HTMLVideoElement) {
 async function extractAllFrames() {
   if (!video || isProcessing) return;
   
+  // 更新处理精度参数
+  updatePrecisionSettings();
+  
   isProcessing = true;
   frames = [];
   currentFrameIndex = 0;
-  // 设置初始时间
-  video.currentTime = 0;
-  // 等待初始seek完成
-  await waitForSeek(video);
   
-  // 开始逐帧提取
-  for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-    // 绘制当前帧到canvas
-    ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
+  // 设置视频播放速率为最大，以快速播放
+  video.playbackRate = 16; // 最大速率
+  video.currentTime = 0;
+  
+  // 开始批量提取
+  let remainingFrames = totalFrames;
+  
+  while (remainingFrames > 0) {
+    const currentBatchSize = Math.min(batchSize, remainingFrames);
     
-    const nowFrameImg = frameCanvas.toDataURL('image/png')
-    if (lastFrameImg !== nowFrameImg) {
-      const src = frameCanvas.toDataURL('image/png')
+    // 使用Promise.all并行处理一批帧
+    await Promise.all(Array.from({ length: currentBatchSize }, async (_, i) => {
+      const frameIndex = totalFrames - remainingFrames + i;
+      
+      // 设置当前帧时间
+      video.currentTime = frameIndex / frameRate;
+      
+      // 短暂等待帧渲染（比waitForSeek快）
+      await new Promise(resolve => setTimeout(resolve, 16));
+      
+      // 绘制当前帧到canvas
+      ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
+      
+      // 根据画布质量调整toDataURL的质量参数
+      const src = frameCanvas.toDataURL('image/png', canvasQuality)
       const img = new Image();
       img.src = src;
-      frames = [...frames, { src, img }]
-      lastFrameImg = nowFrameImg
+      // 等待图像加载完成
+      await new Promise(resolve => img.onload = resolve);
+      frames.push({ src, img });
       currentFrameIndex++;
-    }
+    }));
     
-    // 如果还有下一帧，设置下一帧的时间
-    if (frameIndex < totalFrames - 1) {
-      video.currentTime = (frameIndex + 1) / frameRate;
-      // 等待seek完成
-      await waitForSeek(video);
-    }
+    remainingFrames -= currentBatchSize;
   }
+  
+  // 恢复正常播放速率
+  video.playbackRate = 1;
   
   isProcessing = false;
   findLoop(0);
 }
 
-function begainLoop() {
+// 添加播放速度控制参数
+let playSpeed = 0.5; // 播放速度，值越小越慢，0.1-1.0
+
+function beginLoop() {
   if (inRemoveBg) return
 
   inLoop = true
   loopFrame = loopStart
 
   function run() {
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       loopFrame++
       console.log(loopFrame, loopEnd)
       if (loopFrame > loopEnd) loopFrame = loopStart
       if (inLoop) run()
-    })
+    }, 1000 / (60 * playSpeed)); // 控制播放速度
   }
 
   run()
@@ -220,10 +295,21 @@ async function removeBg(frame: Frame) {
 async function removeFrameBg() {
   inLoop = false
   inRemoveBg = true
-  for (let i = loopStart, l = loopEnd; i <= l; i++) {
-    await removeBg(frames[i])
-    console.log('完成✅', i)
+  
+  // 更新处理精度参数
+  updatePrecisionSettings();
+  
+  // 并行处理，每次最多同时处理parallelLimit个帧
+  const framesToProcess = frames.slice(loopStart, loopEnd + 1);
+  const totalFramesToProcess = framesToProcess.length;
+  
+  // 分块处理
+  for (let i = 0; i < totalFramesToProcess; i += parallelLimit) {
+    const batch = framesToProcess.slice(i, i + parallelLimit);
+    await Promise.all(batch.map(frame => removeBg(frame)));
+    console.log(`完成 ${Math.min(i + parallelLimit, totalFramesToProcess)}/${totalFramesToProcess} 帧`);
   }
+  
   inRemoveBg = false
 }
 </script>
@@ -266,7 +352,7 @@ async function removeFrameBg() {
     
     <div class="slider-container">
       <label for="frameSlider">帧导航:</label>
-      <input type="range" bind:this={frameSlider} bind:value={currentFrameIndex} min="0" max={frames.length}>
+      <input type="range" bind:this={frameSlider} id="frameSlider" bind:value={currentFrameIndex} min="0" max={frames.length}>
     </div>
     
     <!-- <div class="controls">
@@ -287,10 +373,59 @@ async function removeFrameBg() {
     <div class="do-frame-container">
       {#if frames.length}
         {#each frames as frame, i }
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <img src={frame.src} alt={`${i}`} class={ frame.select ? 'selected' : '' } on:click={() => findLoop(i)}/>
+          <img src={frame.src} alt={`${i}`} on:click={() => findLoop(i)}/>
         {/each}
       {/if}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>参数设置</h2>
+    <div class="settings-group">
+      <label for="loopSensitivity">循环检测灵敏度</label>
+      <input 
+        type="range" 
+        id="loopSensitivity" 
+        bind:value={loopSensitivity} 
+        min="0.8" 
+        max="1.0" 
+        step="0.01" 
+      />
+      <span>{loopSensitivity.toFixed(2)}</span>
+    </div>
+    
+    <div class="settings-group">
+      <label for="processingPrecision">处理精度</label>
+      <select 
+        id="processingPrecision" 
+        bind:value={processingPrecision}
+      >
+        <option value="low">低（快速）</option>
+        <option value="medium">中（平衡）</option>
+        <option value="high">高（精确）</option>
+      </select>
+    </div>
+    
+    <div class="settings-group">
+      <label for="playSpeed">播放速度</label>
+      <input 
+        type="range" 
+        id="playSpeed" 
+        bind:value={playSpeed} 
+        min="0.1" 
+        max="1.0" 
+        step="0.1" 
+      />
+      <span>{playSpeed.toFixed(2)}x</span>
+    </div>
+    
+    <div class="settings-group">
+      <label for="parameterExplanation">参数说明：</label>
+      <div id="parameterExplanation">
+        <p><strong>循环检测灵敏度</strong>：值越高，循环检测越严格，适合动作幅度小的视频。</p>
+        <p><strong>处理精度</strong>：低精度处理速度快但质量稍差；高精度质量好但处理速度慢。</p>
+        <p><strong>播放速度</strong>：值越小，动画播放速度越慢；值越大，动画播放速度越快。</p>
+      </div>
     </div>
   </div>
 
@@ -301,7 +436,7 @@ async function removeFrameBg() {
         <img src={frames[loopFrame].src} alt={`${loopFrame}`}/>
       {/if}
     </div>
-    <button on:click={begainLoop}>开始播放</button>
+    <button on:click={beginLoop}>开始播放</button>
     <button on:click={removeFrameBg}>清除背景</button>
   </div>
 </main>
@@ -386,10 +521,32 @@ async function removeFrameBg() {
 
 .do-frame-container img {
   max-height: 100px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  padding: 2px;
+  border: 2px solid transparent;
 }
+
+.do-frame-container img:hover {
+  border: 2px solid rgba(74, 0, 224, 0.5);
+  border-radius: 5px;
+}
+
 .do-frame-container img.selected {
-  opacity: 0.8;
+  border: 2px solid #4a00e0;
+  border-radius: 5px;
+  transform: scale(1.05);
 }
+
+.do-frame-container button {
+  max-height: 100px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+
 
 .frame-canvas {
   max-width: 100%;
@@ -470,5 +627,41 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: #4a00e0;
   cursor: pointer;
+}
+
+.settings-group {
+  margin-bottom: 25px;
+}
+
+.settings-group label {
+  display: block;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.settings-group select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #000;
+  font-size: 16px;
+}
+
+.settings-group input[type="range"] + span {
+  display: inline-block;
+  margin-left: 10px;
+  min-width: 50px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.settings-group p {
+  margin: 5px 0;
+  color: #666;
+  font-size: 14px;
 }
 </style>
