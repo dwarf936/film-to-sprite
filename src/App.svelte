@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { removeBackground } from '@imgly/background-removal'
+type ImageDataArray = Uint8ClampedArray;
 interface Frame{ src: string, select?: boolean, img: HTMLImageElement }
 
 const frameRate = 30
@@ -21,6 +22,11 @@ let inLoop = false;
 let inRemoveBg = false;
 let loopFrame = 0
 let frames: Frame[] = []
+// 循环检测参数
+let similarityThreshold = 0.95;
+let searchRangeStart = 0.5;
+let searchRangeEnd = 1.0;
+let playbackSpeed = 1.0; // 播放速度
 let isProcessing = false
 let ctx: CanvasRenderingContext2D
 
@@ -63,6 +69,47 @@ function onchange(e: Event & { currentTarget: HTMLInputElement }) {
   }
 }
 
+// 感知哈希算法计算图片指纹
+function getImageHash(img: HTMLImageElement, size = 8) {
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d') as CanvasRenderingContext2D;
+  tempCanvas.width = size;
+  tempCanvas.height = size;
+  
+  // 缩小图片并转为灰度
+  tempCtx.drawImage(img, 0, 0, size, size);
+  const imageData = tempCtx.getImageData(0, 0, size, size);
+  const data = imageData.data;
+  
+  // 计算灰度平均值
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    total += gray;
+  }
+  const avg = total / (size * size);
+  
+  // 计算哈希值
+  let hash = '';
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    hash += gray >= avg ? '1' : '0';
+  }
+  
+  return hash;
+}
+
+// 计算两个哈希值的汉明距离
+function hammingDistance(hash1: string, hash2: string) {
+  let distance = 0;
+  for (let i = 0; i < hash1.length; i++) {
+    if (hash1[i] !== hash2[i]) {
+      distance++;
+    }
+  }
+  return distance;
+}
+
 function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
   let diff = 0;
   const length = data1.length;
@@ -84,54 +131,64 @@ function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
 }
 
 function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
-  const tempCanvas1 = document.createElement('canvas');
-  const tempCtx1 = tempCanvas1.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas1.width = frameCanvas.width;
-  tempCanvas1.height = frameCanvas.height;
-  tempCtx1.drawImage(img1, 0, 0);
+  // 使用感知哈希算法计算相似度
+  const hash1 = getImageHash(img1);
+  const hash2 = getImageHash(img2);
   
-  const tempCanvas2 = document.createElement('canvas');
-  const tempCtx2 = tempCanvas2.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas2.width = frameCanvas.width;
-  tempCanvas2.height = frameCanvas.height;
-  tempCtx2.drawImage(img2, 0, 0);
+  const distance = hammingDistance(hash1, hash2);
+  const maxDistance = hash1.length;
+  const similarity = 1 - (distance / maxDistance);
   
-  // 获取图像数据
-  const imageData1 = tempCtx1.getImageData(0, 0, tempCanvas1.width, tempCanvas1.height);
-  const imageData2 = tempCtx2.getImageData(0, 0, tempCanvas2.width, tempCanvas2.height);
-  
-  // 计算相似度
-  return calculateSimilarity(imageData1.data, imageData2.data)
+  return similarity;
 }
 
 function findLoop(start: number) {
-  let lastSim = 1
-  loopStart = start
-  frames[start].select = true
-  const mark = frames[start].img
-  let selectFlag = true
-  if (start > 0) {
-    for (let i = 0; i < start; i++) {
-      frames[i].select = false
-    }
-  }
-  for (let i = start + 1, l = frames.length; i < l; i++) {
-    if (selectFlag) {
-      const curSim = compare(frames[i].img, mark)
-      if (curSim > lastSim && curSim > 0.98) {
-        selectFlag = false
-        loopEnd = i - 1
-      }
-      lastSim = curSim
-    }
-    frames[i].select = selectFlag
+  if (frames.length === 0) return;
+  
+  loopStart = start;
+  const mark = frames[start].img;
+  let bestSimilarity = 0;
+  let bestMatchIndex = frames.length - 1;
+  
+  // 计算搜索范围
+  const searchStart = Math.floor(frames.length * searchRangeStart);
+  const searchEnd = Math.min(Math.floor(frames.length * searchRangeEnd), frames.length - 1);
+  
+  // 确保搜索范围大于起始帧
+  const actualSearchStart = Math.max(searchStart, start + 30); // 至少间隔30帧避免相邻帧匹配
+  
+  // 重置所有帧的选中状态
+  frames.forEach(frame => frame.select = false);
+  frames[start].select = true;
+  
+  // 全局搜索最佳匹配帧
+  for (let i = actualSearchStart; i <= searchEnd; i++) {
+    const curSim = compare(frames[i].img, mark);
+
+    console.log('curSim ==', curSim)
     
+    // 更新最佳匹配
+    if (curSim > bestSimilarity && curSim >= similarityThreshold) {
+      bestSimilarity = curSim;
+      bestMatchIndex = i;
+    }
+    
+    // 标记正在搜索的帧
+    frames[i].select = false;
   }
-  // 证明没找到
-  if (selectFlag === true && frames.length - 1 > start) {
-    loopEnd = frames.length - 2
-    // findLoop(++start)
-    alert('没找到')
+  
+  // 设置循环结束帧
+  if (bestSimilarity >= similarityThreshold) {
+    loopEnd = bestMatchIndex - 1; // 匹配帧作为新的开始，所以结束帧是匹配帧的前一帧
+    console.log(`找到最佳匹配帧，相似度: ${bestSimilarity.toFixed(4)}，循环范围: ${loopStart} 到 ${loopEnd}`);
+    
+    // 高亮显示循环范围内的帧
+    for (let i = loopStart; i <= loopEnd; i++) {
+      if (frames[i]) frames[i].select = true;
+    }
+  } else {
+    loopEnd = frames.length - 1;
+    alert(`未找到符合相似度阈值(${similarityThreshold})的匹配帧`);
   }
 }
 
@@ -179,25 +236,42 @@ async function extractAllFrames() {
   }
   
   isProcessing = false;
+  // 如果视频帧数较少，自动调整搜索范围
+  if (frames.length < 60) {
+    searchRangeStart = 0.3;
+    searchRangeEnd = 1.0;
+  }
   findLoop(0);
 }
 
 function begainLoop() {
-  if (inRemoveBg) return
+  if (inRemoveBg || loopStart >= loopEnd) return;
 
-  inLoop = true
-  loopFrame = loopStart
+  inLoop = true;
+  loopFrame = loopStart;
+  const frameInterval = 1000 / (frameRate * playbackSpeed);
+  let lastFrameTime = Date.now();
 
   function run() {
-    requestAnimationFrame(() => {
-      loopFrame++
-      console.log(loopFrame, loopEnd)
-      if (loopFrame > loopEnd) loopFrame = loopStart
-      if (inLoop) run()
-    })
+    if (!inLoop) return;
+    
+    const now = Date.now();
+    if (now - lastFrameTime >= frameInterval) {
+      loopFrame++;
+      if (loopFrame > loopEnd) {
+        loopFrame = loopStart;
+      }
+      lastFrameTime = now;
+    }
+    
+    requestAnimationFrame(run);
   }
 
-  run()
+  run();
+}
+
+function stopLoop() {
+  inLoop = false;
 }
 
 function blobToBase64(blob: Blob) {
@@ -284,6 +358,26 @@ async function removeFrameBg() {
 
   <div class="panel">
     <h2>帧处理</h2>
+    
+    <div class="params-container">
+      <div class="param-group">
+        <label for="similarityThreshold">相似度阈值: {similarityThreshold.toFixed(2)}</label>
+        <input type="range" bind:value={similarityThreshold} min="0.8" max="1.0" step="0.01" id="similarityThreshold" />
+      </div>
+      
+      <div class="param-group">
+        <label for="searchRangeStart">搜索范围起始: {searchRangeStart.toFixed(2)}</label>
+        <input type="range" bind:value={searchRangeStart} min="0.0" max="0.9" step="0.05" id="searchRangeStart" />
+      </div>
+      
+      <div class="param-group">
+        <label for="searchRangeEnd">搜索范围结束: {searchRangeEnd.toFixed(2)}</label>
+        <input type="range" bind:value={searchRangeEnd} min="0.1" max="1.0" step="0.05" id="searchRangeEnd" />
+      </div>
+      
+      <button on:click={() => findLoop(loopStart)} class="primary">重新检测循环帧</button>
+    </div>
+    
     <div class="do-frame-container">
       {#if frames.length}
         {#each frames as frame, i }
@@ -296,13 +390,33 @@ async function removeFrameBg() {
 
   <div class="panel">
     <h2>循环播放</h2>
+    
+    <div class="loop-info">
+      <p>循环范围: <span>{loopStart}</span> - <span>{loopEnd}</span></p>
+      <p>总帧数: <span>{loopEnd > loopStart ? loopEnd - loopStart + 1 : 0}</span></p>
+    </div>
+    
+    <div class="param-group">
+      <label for="playbackSpeed">播放速度: {playbackSpeed.toFixed(1)}x</label>
+      <input type="range" bind:value={playbackSpeed} min="0.25" max="4" step="0.25" id="playbackSpeed" />
+    </div>
+    
     <div class="frame-container">
-      {#if inLoop }
+      {#if inLoop && frames[loopFrame]}
         <img src={frames[loopFrame].src} alt={`${loopFrame}`}/>
+      {:else if frames[loopStart]}
+        <img src={frames[loopStart].src} alt="起始帧"/>
       {/if}
     </div>
-    <button on:click={begainLoop}>开始播放</button>
-    <button on:click={removeFrameBg}>清除背景</button>
+    
+    <div class="controls">
+      {#if !inLoop}
+        <button on:click={begainLoop} disabled={loopStart >= loopEnd} class="primary">开始播放</button>
+      {:else}
+        <button on:click={stopLoop} class="primary">停止播放</button>
+      {/if}
+      <button on:click={removeFrameBg} disabled={loopStart >= loopEnd}>清除背景</button>
+    </div>
   </div>
 </main>
 
@@ -447,6 +561,47 @@ button.primary:hover {
 
 .slider-container {
   margin: 20px 0;
+}
+
+.params-container {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.param-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.param-group label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.loop-info {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  padding: 15px;
+  margin-bottom: 20px;
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+}
+
+.loop-info p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.loop-info span {
+  font-weight: 600;
+  color: #4a00e0;
 }
 
 .slider-container label {
