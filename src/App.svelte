@@ -21,6 +21,9 @@ let inLoop = false;
 let inRemoveBg = false;
 let loopFrame = 0
 let frames: Frame[] = []
+// 循环检测参数
+let similarityThreshold = 0.95;
+let searchRange = 0.5; // 搜索后50%的帧
 let isProcessing = false
 let ctx: CanvasRenderingContext2D
 
@@ -63,75 +66,155 @@ function onchange(e: Event & { currentTarget: HTMLInputElement }) {
   }
 }
 
+// 感知哈希算法计算图片指纹
+function getImageHash(img: HTMLImageElement, size = 8): string {
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d') as CanvasRenderingContext2D;
+  tempCanvas.width = size;
+  tempCanvas.height = size;
+  
+  // 缩小图片并转为灰度
+  tempCtx.drawImage(img, 0, 0, size, size);
+  const imageData = tempCtx.getImageData(0, 0, size, size);
+  const data = imageData.data;
+  
+  // 计算灰度平均值
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    total += gray;
+  }
+  const avg = total / (size * size);
+  
+  // 计算哈希值
+  let hash = '';
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    hash += gray >= avg ? '1' : '0';
+  }
+  
+  return hash;
+}
+
+// 计算两个哈希值的汉明距离
+function hammingDistance(hash1: string, hash2: string): number {
+  let distance = 0;
+  for (let i = 0; i < hash1.length; i++) {
+    if (hash1[i] !== hash2[i]) {
+      distance++;
+    }
+  }
+  return distance;
+}
+
+
+
+// 使用感知哈希计算相似度
+function calculateSimilarityByHash(img1: HTMLImageElement, img2: HTMLImageElement): number {
+  const hash1 = getImageHash(img1);
+  const hash2 = getImageHash(img2);
+  
+  const distance = hammingDistance(hash1, hash2);
+  const maxDistance = hash1.length;
+  // 转换为相似度分数(0-1)
+  const similarity = 1 - (distance / maxDistance);
+  
+  return similarity;
+}
+
+async function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
+  // 直接使用感知哈希计算相似度
+  return calculateSimilarityByHash(img1, img2);
+}
+
+// 兼容旧的函数调用签名
 function calculateSimilarity(data1: ImageDataArray, data2: ImageDataArray) {
-  let diff = 0;
-  const length = data1.length;
-  
-  for (let i = 0; i < length; i += 4) {
-      // 比较RGB通道，忽略Alpha通道
-    const rDiff = Math.abs(data1[i] - data2[i]);
-    const gDiff = Math.abs(data1[i+1] - data2[i+1]);
-    const bDiff = Math.abs(data1[i+2] - data2[i+2]);
+  return new Promise<number>((resolve) => {
+    // 创建临时图片元素用于哈希计算
+    const tempCanvas1 = document.createElement('canvas');
+    const tempCtx1 = tempCanvas1.getContext('2d') as CanvasRenderingContext2D;
+    tempCanvas1.width = Math.sqrt(data1.length / 4);
+    tempCanvas1.height = Math.sqrt(data1.length / 4);
+    tempCtx1.putImageData(new ImageData(data1, tempCanvas1.width, tempCanvas1.height), 0, 0);
     
-    diff += (rDiff + gDiff + bDiff) / 3;
-  }
-  
-  // 计算平均差异并转换为相似度
-  const avgDiff = diff / (length / 4);
-  const similarity = 1 - (avgDiff / 255);
-  
-  return Math.max(0, similarity);
-}
-
-function compare(img1: HTMLImageElement, img2: HTMLImageElement) {
-  const tempCanvas1 = document.createElement('canvas');
-  const tempCtx1 = tempCanvas1.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas1.width = frameCanvas.width;
-  tempCanvas1.height = frameCanvas.height;
-  tempCtx1.drawImage(img1, 0, 0);
-  
-  const tempCanvas2 = document.createElement('canvas');
-  const tempCtx2 = tempCanvas2.getContext('2d') as CanvasRenderingContext2D;
-  tempCanvas2.width = frameCanvas.width;
-  tempCanvas2.height = frameCanvas.height;
-  tempCtx2.drawImage(img2, 0, 0);
-  
-  // 获取图像数据
-  const imageData1 = tempCtx1.getImageData(0, 0, tempCanvas1.width, tempCanvas1.height);
-  const imageData2 = tempCtx2.getImageData(0, 0, tempCanvas2.width, tempCanvas2.height);
-  
-  // 计算相似度
-  return calculateSimilarity(imageData1.data, imageData2.data)
-}
-
-function findLoop(start: number) {
-  let lastSim = 1
-  loopStart = start
-  frames[start].select = true
-  const mark = frames[start].img
-  let selectFlag = true
-  if (start > 0) {
-    for (let i = 0; i < start; i++) {
-      frames[i].select = false
-    }
-  }
-  for (let i = start + 1, l = frames.length; i < l; i++) {
-    if (selectFlag) {
-      const curSim = compare(frames[i].img, mark)
-      if (curSim > lastSim && curSim > 0.98) {
-        selectFlag = false
-        loopEnd = i - 1
+    const tempCanvas2 = document.createElement('canvas');
+    const tempCtx2 = tempCanvas2.getContext('2d') as CanvasRenderingContext2D;
+    tempCanvas2.width = Math.sqrt(data2.length / 4);
+    tempCanvas2.height = Math.sqrt(data2.length / 4);
+    tempCtx2.putImageData(new ImageData(data2, tempCanvas2.width, tempCanvas2.height), 0, 0);
+    
+    const img1 = new Image();
+    const img2 = new Image();
+    
+    let loadedCount = 0;
+    
+    function onLoad() {
+      loadedCount++;
+      if (loadedCount === 2) {
+        resolve(calculateSimilarityByHash(img1, img2));
       }
-      lastSim = curSim
     }
-    frames[i].select = selectFlag
     
+    img1.onload = onLoad;
+    img2.onload = onLoad;
+    
+    img1.src = tempCanvas1.toDataURL();
+    img2.src = tempCanvas2.toDataURL();
+    
+    // 如果图片缓存中已有，直接触发onLoad
+    if (img1.complete) onLoad();
+    if (img2.complete) onLoad();
+  });
+}
+
+async function findLoop(start: number) {
+  // 重置所有帧选中状态
+  frames.forEach(frame => frame.select = false);
+  
+  loopStart = start;
+  frames[start].select = true;
+  const mark = frames[start].img;
+  
+  // 计算搜索范围起始位置
+  const searchStartIndex = Math.floor(frames.length * (1 - searchRange));
+  const searchEndIndex = frames.length - 1;
+  
+  console.log(`从第 ${searchStartIndex} 帧到第 ${searchEndIndex} 帧搜索匹配`);
+  
+  let bestMatchIndex = -1;
+  let highestSimilarity = 0;
+  
+  // 遍历搜索范围内的所有帧寻找最佳匹配
+  for (let i = Math.max(searchStartIndex, start + 10); i <= searchEndIndex; i++) {
+    // 跳过太近的帧，避免匹配到相邻帧
+    if (Math.abs(i - start) < 10) continue;
+    
+    const curSim = await compare(frames[i].img, mark);
+    
+    if (curSim > highestSimilarity && curSim >= similarityThreshold) {
+      highestSimilarity = curSim;
+      bestMatchIndex = i;
+    }
   }
-  // 证明没找到
-  if (selectFlag === true && frames.length - 1 > start) {
-    loopEnd = frames.length - 2
-    // findLoop(++start)
-    alert('没找到')
+  
+  // 找到最佳匹配
+  if (bestMatchIndex !== -1) {
+    loopEnd = bestMatchIndex - 1;
+    console.log(`找到最佳匹配: 帧 ${start} 和帧 ${bestMatchIndex}，相似度: ${highestSimilarity.toFixed(4)}`);
+    
+    // 标记选中的循环范围
+    for (let i = start; i <= loopEnd; i++) {
+      frames[i].select = true;
+    }
+  } else {
+    // 没有找到匹配，使用原逻辑
+    loopEnd = frames.length - 2;
+    alert(`未找到符合相似度阈值(${similarityThreshold})的匹配帧，请降低阈值重试`);
+    
+    // 标记从start到结束的所有帧
+    for (let i = start; i <= loopEnd; i++) {
+      frames[i].select = true;
+    }
   }
 }
 
@@ -150,25 +233,22 @@ async function extractAllFrames() {
   isProcessing = true;
   frames = [];
   currentFrameIndex = 0;
+  lastFrameImg = '';
   // 设置初始时间
   video.currentTime = 0;
   // 等待初始seek完成
   await waitForSeek(video);
   
-  // 开始逐帧提取
+  // 开始逐帧提取，移除去重逻辑确保提取所有帧
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     // 绘制当前帧到canvas
     ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
     
-    const nowFrameImg = frameCanvas.toDataURL('image/png')
-    if (lastFrameImg !== nowFrameImg) {
-      const src = frameCanvas.toDataURL('image/png')
-      const img = new Image();
-      img.src = src;
-      frames = [...frames, { src, img }]
-      lastFrameImg = nowFrameImg
-      currentFrameIndex++;
-    }
+    const src = frameCanvas.toDataURL('image/png')
+    const img = new Image();
+    img.src = src;
+    frames = [...frames, { src, img }]
+    currentFrameIndex++;
     
     // 如果还有下一帧，设置下一帧的时间
     if (frameIndex < totalFrames - 1) {
@@ -179,7 +259,7 @@ async function extractAllFrames() {
   }
   
   isProcessing = false;
-  findLoop(0);
+  await findLoop(0);
 }
 
 function begainLoop() {
@@ -284,11 +364,33 @@ async function removeFrameBg() {
 
   <div class="panel">
     <h2>帧处理</h2>
+    
+    <div class="help-text">
+      <h4>使用说明</h4>
+      <p>1. 点击任意帧作为循环起始点</p>
+      <p>2. 调整参数自动搜索最佳匹配的循环结束点</p>
+      <p>3. 选中的帧会高亮显示，表示循环播放范围</p>
+    </div>
+    
+    <div class="params-container">
+      <div class="param-item">
+        <label for="similarityThreshold">相似度阈值: {similarityThreshold.toFixed(2)}</label>
+        <input type="range" id="similarityThreshold" bind:value={similarityThreshold} min="0.8" max="1.0" step="0.01" on:input={async () => { if (frames.length > 0 && loopStart >= 0) await findLoop(loopStart); }} />
+        <small>值越高匹配越严格，默认: 0.95。如果未找到匹配请适当降低此值。</small>
+      </div>
+      
+      <div class="param-item">
+        <label for="searchRange">搜索范围比例: {searchRange.toFixed(2)}</label>
+        <input type="range" id="searchRange" bind:value={searchRange} min="0.1" max="0.9" step="0.1" on:input={async () => { if (frames.length > 0 && loopStart >= 0) await findLoop(loopStart); }} />
+        <small>设置从视频后N%的帧中搜索匹配帧，默认: 0.5。值越小搜索范围越靠后。</small>
+      </div>
+    </div>
+
     <div class="do-frame-container">
       {#if frames.length}
         {#each frames as frame, i }
           <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <img src={frame.src} alt={`${i}`} class={ frame.select ? 'selected' : '' } on:click={() => findLoop(i)}/>
+          <img src={frame.src} alt={`${i}`} class={ frame.select ? 'selected' : '' } on:click={async () => await findLoop(i)}/>
         {/each}
       {/if}
     </div>
@@ -449,9 +551,49 @@ button.primary:hover {
   margin: 20px 0;
 }
 
-.slider-container label {
+.params-container {
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.param-item {
+  padding: 15px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+}
+
+.param-item label {
   display: block;
   margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.help-text {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: rgba(74, 0, 224, 0.1);
+  border-radius: 8px;
+  border-left: 4px solid #4a00e0;
+}
+
+.help-text h4 {
+  margin: 0 0 10px 0;
+  color: #4a00e0;
+}
+
+.help-text p {
+  margin: 5px 0;
+  font-size: 0.95em;
+  opacity: 0.9;
+}
+
+.param-item small {
+  display: block;
+  margin-top: 8px;
+  opacity: 0.7;
+  font-size: 0.9em;
 }
 
 input[type="range"] {
