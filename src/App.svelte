@@ -27,13 +27,6 @@ let searchRange = 0.5; // 搜索后50%的帧
 let isProcessing = false
 let ctx: CanvasRenderingContext2D
 
-// 监听参数变化自动重新检测循环
-$: if (frames.length > 0 && loopStart >= 0) {
-  (async () => {
-    await findLoop(loopStart);
-  })();
-}
-
 function formatTime(seconds: number) {
   if (!seconds) return '00:00'
   const mins = Math.floor(seconds / 60);
@@ -240,25 +233,22 @@ async function extractAllFrames() {
   isProcessing = true;
   frames = [];
   currentFrameIndex = 0;
+  lastFrameImg = '';
   // 设置初始时间
   video.currentTime = 0;
   // 等待初始seek完成
   await waitForSeek(video);
   
-  // 开始逐帧提取
+  // 开始逐帧提取，移除去重逻辑确保提取所有帧
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     // 绘制当前帧到canvas
     ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
     
-    const nowFrameImg = frameCanvas.toDataURL('image/png')
-    if (lastFrameImg !== nowFrameImg) {
-      const src = frameCanvas.toDataURL('image/png')
-      const img = new Image();
-      img.src = src;
-      frames = [...frames, { src, img }]
-      lastFrameImg = nowFrameImg
-      currentFrameIndex++;
-    }
+    const src = frameCanvas.toDataURL('image/png')
+    const img = new Image();
+    img.src = src;
+    frames = [...frames, { src, img }]
+    currentFrameIndex++;
     
     // 如果还有下一帧，设置下一帧的时间
     if (frameIndex < totalFrames - 1) {
@@ -385,13 +375,13 @@ async function removeFrameBg() {
     <div class="params-container">
       <div class="param-item">
         <label for="similarityThreshold">相似度阈值: {similarityThreshold.toFixed(2)}</label>
-        <input type="range" id="similarityThreshold" bind:value={similarityThreshold} min="0.8" max="1.0" step="0.01" />
+        <input type="range" id="similarityThreshold" bind:value={similarityThreshold} min="0.8" max="1.0" step="0.01" on:input={async () => { if (frames.length > 0 && loopStart >= 0) await findLoop(loopStart); }} />
         <small>值越高匹配越严格，默认: 0.95。如果未找到匹配请适当降低此值。</small>
       </div>
       
       <div class="param-item">
         <label for="searchRange">搜索范围比例: {searchRange.toFixed(2)}</label>
-        <input type="range" id="searchRange" bind:value={searchRange} min="0.1" max="0.9" step="0.1" />
+        <input type="range" id="searchRange" bind:value={searchRange} min="0.1" max="0.9" step="0.1" on:input={async () => { if (frames.length > 0 && loopStart >= 0) await findLoop(loopStart); }} />
         <small>设置从视频后N%的帧中搜索匹配帧，默认: 0.5。值越小搜索范围越靠后。</small>
       </div>
     </div>
